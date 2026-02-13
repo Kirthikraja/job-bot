@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+sqlalchemy
+python-dotenv
+playwright
+beautifulsoup4
+httpx
+pymupdf
+openpyxl
+apscheduler
+google-generativeai
+cryptography
+python-multipart
+websockets
+pytest
