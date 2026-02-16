@@ -1,12 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from models import init_db
+#from api.routes.resume import router as resume_router
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
 app = FastAPI(title="Job Bot API")
+
+# Mount the resume routes so /resume and /resume/upload work
+#app.include_router(resume_router)
 
 app.add_middleware(
     CORSMiddleware,
