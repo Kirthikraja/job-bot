@@ -208,7 +208,7 @@ def validate_parsed_resume(data:dict)->dict:  #data: parameter name , dict: para
 
 def save_parsed_resume(parsed_data:dict, save_path:str="uploads/parsed_resume.json")-> None:
     """Save parsed resume data as JSON for other components to use it"""
-    os.makedirs(os.path.driname(save_path), exist_ok=True) #creates the folder
+    os.makedirs(os.path.dirname(save_path), exist_ok=True) #creates the folder
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(parsed_data, f, indent=2, ensure_ascii=False) #dump the data into the file
 
