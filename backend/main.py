@@ -22,7 +22,7 @@ app.add_middleware(
 
 @app.on_event("startup")  # run this function once when the server starts
 def startup():
-    init_db()  # create all tables (Job, Application, Credential, etc.)
+    init_db()  # create  tables (Job, Application, Credential, etc.)
     print("Database initialized")
 
 @app.get("/health")  # GET /health → quick check if server is up
