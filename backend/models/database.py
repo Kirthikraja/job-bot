@@ -22,7 +22,7 @@ SessionLocal=sessionmaker(bind=engine, autocommit=False, autoflush=False)
 #base=the class that every model (Job, Application, etc.) inherits from.
 #sqlalchemy uses it to create tables in the database
 
-Base=declarative_base()
+Base=declarative_base() #declarative_base() is a SQLAlchemy function that creates a base class for all your models
 
 
 
