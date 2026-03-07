@@ -14,3 +14,38 @@
 #
 # Data is stored in the credentials table (Credential model). Encryption/decryption
 # of the password is done before save and when the bot needs to use it.
+from fastapi import APIRouter,HTTPException,Depends
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from models.credential import Credential
+from models.database import get_db
+
+router=APIRouter(prefix="/credentials",tags=["credentials"])
+
+
+
+class CredentialRequest(BaseModel):
+    site:str;
+    username:str;
+    password:str;
+
+
+# POST /credentials: User submits site, username, password (e.g. when bot needs login for that site).
+# We look up if we already have a row for this site. If yes, we update username and password; if no,
+# we create a new Credential row. Password is stored in DB (TODO: encrypt with Fernet later).
+# Returns a short message and the site name.
+@router.post("",status_code=201)
+def save_credential(body:CredentialRequest,db:Session=Depends(get_db)):
+    """Save a new credential or update an existing one"""
+    existing=db.query(Credential).filter(Credential.site==body.site).first()
+    password_stored = body.password  # TODO: encrypt with Fernet before storing 
+    if existing:
+        existing.username=body.username
+        existing.password_encrypted=password_stored
+        db.commit()
+        return{"message":"Credential saved successfully","site":body.site}
+    cred=Credential(site=body.site,username=body.username,password_encrypted=password_stored)
+    db.add(cred)
+    db.commit()
+    return{"message":"Credential saved successfully","site":body.site}

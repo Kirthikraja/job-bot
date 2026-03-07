@@ -25,3 +25,6 @@ class Credential(Base):
     site=Column(String,unique=True)#e.g. "workday", "greenhouse"
     username=Column(String)
     password_encrypted=Column(String)#encrypted with Fernet
+
+
+
