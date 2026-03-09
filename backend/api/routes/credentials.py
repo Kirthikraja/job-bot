@@ -39,7 +39,7 @@ class CredentialRequest(BaseModel):
 def save_credential(body:CredentialRequest,db:Session=Depends(get_db)):
     """Save a new credential or update an existing one"""
     existing=db.query(Credential).filter(Credential.site==body.site).first()
-    password_stored = body.password  # TODO: encrypt with Fernet before storing 
+    password_stored=body.password #TODO :enrypt wiht fernet before Sotring
     if existing:
         existing.username=body.username
         existing.password_encrypted=password_stored
@@ -49,3 +49,18 @@ def save_credential(body:CredentialRequest,db:Session=Depends(get_db)):
     db.add(cred)
     db.commit()
     return{"message":"Credential saved successfully","site":body.site}
+
+# GET /credentials/{site}: Returns the one saved credential for this site (used when the bot or client needs to log in there).
+# We send back only site and username. We do NOT send the password so it never goes over the API;
+# if the bot needs the password to fill the login form, backend code reads the Credential row from the DB and uses it server-side.
+@router.get("/{site}")
+def get_credential_by_site(site: str, db: Session = Depends(get_db)):
+    """Return the one credential for this site (site + username only; no password)."""
+    # site comes from the URL path (e.g. /credentials/linkedin → site is "linkedin"); db is the DB session to run queries
+    cred = db.query(Credential).filter(Credential.site == site).first()
+    # look up the single row in credentials table where site matches; .first() gives that row or None if none exists
+    if not cred:
+        # we have no saved credential for this site, so client should ask the user for login and then POST to save
+        raise HTTPException(status_code=404, detail=f"No credential found for site: {site}")
+    # return only site and username; password is never sent in the response so it stays server-side for security
+    return {"site": cred.site, "username": cred.username}
