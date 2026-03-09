@@ -31,3 +31,9 @@ class Job(Base):
 
 
 
+
+
+  # this file define the schema/ shape of the jobs table . it does not store or read   
+
+
+

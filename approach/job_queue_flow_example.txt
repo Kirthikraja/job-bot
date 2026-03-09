@@ -1,0 +1,60 @@
+Job queue flow – example with 5 jobs
+=====================================
+This file explains how jobs move from detection → storage → ranking → retrieval so anyone reading the project can follow the flow.
+
+Setup
+-----
+User profile (from resume): Backend Python, 2 years, wants full-time, Bangalore.
+
+Step 1 – Detector sees 5 jobs (LinkedIn notifications)
+------------------------------------------------------
+Detector does NOT read full job descriptions. For each job it only takes role, company, URL and calls add_job(db, ...).
+
+#   Role                  Company   Link (source_url / apply_url)
+1   Python Dev            TechA     linkedin.com/jobs/1
+2   Frontend React        TechB     linkedin.com/jobs/2
+3   Backend Engineer      TechC     linkedin.com/jobs/3
+4   Data Analyst          TechD     linkedin.com/jobs/4
+5   Full-stack Python     TechE     linkedin.com/jobs/5
+
+For each: add_job(db, role="...", source_url="...", company="...", ...).
+All 5 are stored in the jobs table with status = "pending". Order in DB doesn't matter yet.
+
+Step 2 – Fetcher gets JDs, AI ranks vs user profile
+---------------------------------------------------
+Something (e.g. fetcher/ranker) loads the full job description for each of the 5 jobs, then asks AI: "How well does this JD match this profile?" and gets a score (e.g. 0–100).
+
+Job   Role                  JD summary (simplified)        AI score (fit)
+1     Python Dev            Python, 1+ yr, Mumbai           75
+2     Frontend React        React, 3+ yr                    30
+3     Backend Engineer      Python, 2 yr, Bangalore, FT     95
+4     Data Analyst          SQL, Excel, no Python           20
+5     Full-stack Python     Python, 1+ yr, remote           88
+
+We save that score on each job (e.g. match_score column), so in the DB we have:
+  Job 3 → 95
+  Job 5 → 88
+  Job 1 → 75
+  Job 2 → 30
+  Job 4 → 20
+
+Step 3 – Retrieve and process in "most apt" order
+--------------------------------------------------
+When the pipeline runs, it doesn't just "get pending jobs"; it gets them ordered by score (e.g. list_pending_jobs or a similar function that does ORDER BY match_score DESC).
+
+So the bot retrieves in this order:
+  1. Job 3 (95) – Backend Engineer, TechC
+  2. Job 5 (88) – Full-stack Python, TechE
+  3. Job 1 (75) – Python Dev, TechA
+  4. Job 2 (30) – Frontend React, TechB
+  5. Job 4 (20) – Data Analyst, TechD
+
+Then it applies in that order (or applies only to the top N, e.g. top 3).
+
+Summary
+-------
+  • Detector: see job → add_job (light data, no full JD).
+  • Fetcher/ranker: fetch JD → AI score vs profile → save match_score on job.
+  • Pipeline: retrieve pending jobs ordered by match_score DESC → apply best first.
+
+Jobs are stored in the jobs table (database); we can query by status, score, or id, so we can "pick any job" or process in rank order.
