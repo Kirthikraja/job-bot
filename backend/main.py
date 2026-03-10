@@ -30,3 +30,4 @@ def startup():
 @app.get("/health")  # GET /health → quick check if server is up
 def health():
     return {"status": "running"}  # response body
+    

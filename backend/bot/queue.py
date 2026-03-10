@@ -50,4 +50,3 @@ def add_job(
 def list_pending_jobs(db:Session):
     """Return all jobs where status is "pending", ordered by created_at."""
     return db.query(Job).filter(Job.status=="pending").order_by(Job.created_at.desc()).all()
-    
