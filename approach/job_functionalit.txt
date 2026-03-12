@@ -1,0 +1,96 @@
+
+To automate job applications across inconsistent platforms like LinkedIn, Workday, and Greenhouse, you need a stack that uses Vision-Language Models (VLM). Traditional scripts break when layouts change, but modern AI agents "see" the page to identify fields like "First Name" regardless of the underlying code.
+
+The "Best" AI Tech Stack for Job Automation functionality
+
+Orchestration Engine: Browser-use (Python)
+- This is the gold standard for "Agentic Browsing".
+- It uses Playwright as the "hands" and an LLM as the "eyes/brain" to navigate websites using natural language instructions.
+- Why for you: It can handle the redirection from LinkedIn to external portals by treating the new tab as a continuation of its task.
+
+Reasoning Model: Claude 3.5 Sonnet
+- Currently the most capable model for Computer Use and visual reasoning.
+- It is significantly better than other models at identifying buttons, checkboxes, and input fields in complex, messy layouts like Workday.
+
+Infrastructure: Skyvern or Browserbase
+- LinkedIn has aggressive bot detection and 2FA requirements.
+- Skyvern uses computer vision to handle 2FA/TOTP and CAPTCHAs natively.
+- Browserbase provides "Stealth Mode" and residential proxies to ensure your automation isn't immediately flagged as a bot.
+
+Data Standard: Firecrawl
+- Converts complex job postings into clean Markdown or JSON.
+- This allows your AI to "read" the job description first and decide if it matches the user's profile before starting the application process.
+
+How it solves the "Inconsistency" Problem
+
+Semantic Mapping: Instead of looking for a specific HTML ID (which changes on every site), the agent uses the LLM to find the "semantic" meaning. It knows that "Given Name," "First Name," and "Forename" all require the same piece of data from the user's profile.
+
+Visual Logic: If a "Submit" button is blue on one site and green on another, or if it's hidden inside a shadow DOM, the Vision API identifies it based on its appearance and context.
+
+State Management: Using tools like LangGraph, you can build a "loop" where the agent:
+- Navigates to LinkedIn Job Notifications.
+- Clicks a job.
+- If it redirects to Workday, it initiates a new "Apply" sub-process.
+- If it gets stuck, it records a screenshot for the user and asks for help.
+
+
+Detector / Fetcher responsibilities (aligned with Gemini plan)
+==============================================================
+
+Detector (bot/detector.py) – "Job Scraper Agent"
+------------------------------------------------
+
+Goal: Log in to LinkedIn, go to your Notifications → Jobs tab, open each job alert, and push the jobs it finds into our queue/DB.
+
+Tools the detector uses:
+- **Browserbase** (or similar) – provides a stealth, remote browser so LinkedIn is less likely to flag us as a bot.
+- **Stagehand / browser-use style agent** – uses Playwright as the "hands" and an LLM (Claude 3.5 Sonnet) as the "eyes/brain" so we can give natural language actions like `page.act("Click on the Jobs tab")`.
+
+High-level detector flow:
+1. **Secure login / session**
+   - First time: open LinkedIn in the stealth browser, user solves 2FA if needed, and the agent saves a session file (cookies), e.g. `session.json`.
+   - Next times: detector loads `session.json` so it is already logged in (fewer logins, less chance of CAPTCHAs).
+   - If the session is invalid, detector falls back to credentials from our DB (via `credential_manager.py`) to log in again and re-save the session.
+
+2. **Navigate to Notifications → Jobs**
+   - Use Stagehand/browser-use commands to:
+     - Go to `https://www.linkedin.com/notifications/`.
+     - Click the **Jobs** filter/tab at the top of notifications.
+   - End state: detector is on the same "Jobs notifications" screen that the user sees in the mobile screenshots (list of job alert cards with "32m", "4h", "5h", etc.).
+
+3. **Find job alerts and job list pages**
+   - Scroll the Jobs notifications list to load all recent job alerts.
+   - For each job notification card:
+     - Click it to open the corresponding **job results page** (a list of jobs for that alert).
+   - On the job results page, the agent uses vision/semantic understanding to identify each job entry (title, company, location, link).
+
+4. **Enqueue jobs**
+   - For each job entry found:
+     - Extract at least: role/title, company, location (if visible), and a stable job URL (apply_url/source_url).
+     - Deduplicate by URL (so the same job from multiple notifications only appears once).
+     - Call the queue layer (`bot/queue.py` or POST `/jobs`) to insert a row into the `jobs` table with `status="pending"`.
+   - Detector does **not** read the full job description; it only discovers and queues jobs.
+
+
+Fetcher (planned for fetcher.py) – "JD reader"
+---------------------------------------------
+
+Goal: Given one queued job (with its URL), open the job page and extract a **clean JSON** representation of the job description.
+
+Tools the fetcher uses:
+- **Firecrawl** – fetches the job posting page and converts it into clean Markdown/JSON.
+- **Claude 3.5 Sonnet** – can further structure Firecrawl output into fields we care about (title, company, responsibilities, requirements, skills, etc.).
+
+High-level fetcher flow:
+1. Take a job from the queue (from the `jobs` table) with an `apply_url` or `source_url`.
+2. Use Firecrawl (and/or the same browser/session) to fetch the job page.
+3. Convert the page into clean Markdown/JSON.
+4. Use Claude 3.5 Sonnet to turn that into a structured object:
+   `{ title, company, location, employment_type, description_text, requirements, responsibilities, skills_required, ... }`.
+5. Save or return this structured job description so the matcher/prioritizer agent can decide whether the job fits the user and should be applied to.
+
+Summary:
+- **Detector** = LinkedIn bell → find job alerts → open them → extract job entries → push into queue.
+- **Fetcher** = For each queued job URL → Firecrawl + AI → clean, structured job description for later matching and applying.
+
+

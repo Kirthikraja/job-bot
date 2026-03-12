@@ -9,8 +9,8 @@
 
 #step 
 from sqlalchemy.orm import Session   # to interact with the database
-from .credential_manager import get_linkedin_credentials
-from .import queue
+from . credential_manager import get_linkedin_credentials
+from . import queue
 
 
 #step 
@@ -24,7 +24,7 @@ def detect_jobs_from_linkedin(db: Session):
     """
 
     #step1: try to get linkedin credentials
-    creds=get_linkedin_Credentials(db)
+    creds=get_linkedin_credentials(db)
     if creds is None:
         # We don't have LinkedIn creds yet.
         # The caller (LLM/chat) should see this and ask the user to provide them,
@@ -37,7 +37,7 @@ def detect_jobs_from_linkedin(db: Session):
     # For now we just return a stub so we can wire the credentials flow first.
 
     return {
-        "status": "logged_in_linkedin",
+        "status": "credentials_available",
         "username": username,
         #Note: nevr return the password here
     }
