@@ -1,0 +1,171 @@
+Detector flow (LinkedIn notifications → jobs in our DB)
+======================================================
+Purpose
+-------
+The detector is the agent that:
+- Logs into LinkedIn using the user’s credentials.
+- Navigates to Notifications → Jobs tab (the bell, then Jobs sub-tab).
+- Opens each job notification card (32m, 4h, 5h, …).
+- From each card’s job results page, extracts individual jobs.
+- Pushes each unique job into our job queue / DB.
+It does NOT read full job descriptions and does NOT decide if a job matches the user; it only finds and enqueues them.
+Inputs and outputs
+------------------
+Inputs:
+- LinkedIn credentials or session (from credential_manager.py).
+- Browser/session object (e.g. Playwright) or a way to create one.
+- Optional filters (e.g. “only notifications newer than X hours”).
+Outputs:
+- A set/list of job entries that were added to the DB.
+- Each job entry at this stage has at least:
+  - role/title
+  - company
+  - location (if visible)
+  - source_url (notification / list URL)
+  - apply_url (if discoverable easily from list)
+  - ats_type (best guess from URL / text, e.g. "linkedin", "workday")
+- Side-effect: those jobs are inserted into the jobs table via add_job or POST /jobs with status = "pending".
+High-level steps
+----------------
+1. Obtain LinkedIn access
+   - Ask credential_manager for LinkedIn credentials:
+     - username (email)
+     - password (decrypted)
+     - or an existing logged-in session/cookies.
+   - Open a browser session (Playwright or similar).
+   - Either:
+     - Use username/password to log in (fill login form, solve 2FA if needed), or
+     - Load cookies/session to skip login and go straight to logged-in state.
+2. Navigate to Notifications → Jobs
+   - Go to https://www.linkedin.com/
+   - Click the Notifications bell icon.
+   - On that page, choose the “Jobs” sub-tab (not All / My posts / Mentions).
+   - Wait until the list of job notification cards is visible (like: “Internship … – 32m”, “asml: new opportunities – 4h”, etc.).
+3. Iterate over job notification cards
+   For each notification card in the Jobs tab:
+   - Optionally skip old ones (e.g. older than last run).
+   - Click on the card.
+   - LinkedIn opens a job results page for that alert (list of actual jobs).
+   - Wait until the job list is fully loaded.
+4. Extract individual jobs from the results page
+   On each job results page:
+   - Loop over each job item in the list:
+     - Read:
+       - title (role)
+       - company
+       - location (if present)
+       - Link to that specific job (URL) – this becomes apply_url or source_url.
+     - Optionally read a short snippet if it’s cheap to get.
+   - Build an internal representation:
+     { role, company, location, apply_url, source_url, ats_type_guess }
+5. Deduplicate jobs
+   - Before inserting into the queue/DB:
+     - Check if a job with the same apply_url (or other strong key) already exists in the jobs table or in this batch.
+     - If yes → skip (this covers duplicates across multiple notification cards).
+     - If no → proceed.
+6. Enqueue jobs
+   - For each unique job:
+     - Call add_job(db, role=..., company=..., source_url=..., apply_url=..., ats_type=..., is_internship=..., description=...)
+       OR POST /jobs with the same fields.
+   - The DB now has a row for each unique job with status="pending".
+7. Return a summary
+   - Return a list of the jobs that were successfully inserted (or simple stats: how many new jobs detected, how many skipped as duplicates).
+Responsibilities vs non-responsibilities
+----------------------------------------
+Detector DOES:
+- Navigate LinkedIn → Notifications → Jobs.
+- Open each job notification card.
+- Extract basic job entries from list pages.
+- Deduplicate and insert into the job queue.
+Detector DOES NOT:
+- Read full job descriptions (only list-level info).
+- Decide if a job fits the user’s degree/skills/preferences.
+- Apply to jobs.
+Those later steps belong to fetcher, matcher/prioritizer, and application engine.
+Fetcher flow (one queued job → rich job description)
+====================================================
+Purpose
+-------
+The fetcher is the agent that:
+- Takes a job already in the queue (from the DB),
+- Goes to its job page (LinkedIn job page, Workday posting, etc.),
+- Extracts the full job description and important fields,
+- Returns that information in a clean, machine-readable form (text/JSON).
+It does NOT decide whether to apply; it just gives us the job’s “truth.”
+Inputs and outputs
+------------------
+Inputs:
+- A Job record from the DB (from the jobs table), with at least:
+  - apply_url or source_url – URL where the full JD is accessible.
+  - Basic fields (role, company, location) may also be present.
+Outputs:
+- A structured representation of the full job description, for example:
+  - title
+  - company
+  - location
+  - employment_type (internship/full-time/contract)
+  - description_text (long text)
+  - requirements (list of bullet points)
+  - responsibilities
+  - skills_required
+  - any other fields we want (industry, salary if present, etc.).
+This can be stored as a separate table or a JSON column, or written back into the jobs table.
+High-level steps
+----------------
+1. Select a job to fetch
+   - Pipeline or some scheduler picks one pending job from the DB (or a batch).
+   - It passes this job to fetcher (e.g. fetch_job_details(job)).
+2. Open the job page
+   - Use:
+     - HTTP + a tool like Firecrawl / Playwright to load the page, or
+     - The same browser session as the detector/application engine.
+   - Go to apply_url (if present), or source_url if that’s where the JD lives.
+   - Handle:
+     - Redirects from LinkedIn to external ATS (Workday, Greenhouse, etc.).
+     - Login if required (use same session/credentials infrastructure).
+3. Extract raw content
+   - Get:
+     - The page’s HTML, or
+     - A cleaned version (Firecrawl output: Markdown, sections, etc.).
+   - Ensure we have:
+     - Job title, company, location,
+     - The full description text that a human would read.
+4. Use AI/ML to structure the JD
+   - Send the raw text/Markdown to an AI model with instructions like:
+     “Extract title, company, location, responsibilities, requirements, skills, employment type, etc., as JSON.”
+   - Validate and clean the result (e.g. ensure lists are lists, strings are strings).
+5. Return (and optionally store) the structured JD
+   - Return a dict/object representing the job, like:
+     {
+       "title": "...",
+       "company": "...",
+       "location": "...",
+       "employment_type": "internship",
+       "description_text": "...",
+       "requirements": ["...", "..."],
+       "responsibilities": ["...", "..."],
+       "skills_required": ["Python", "ML", ...]
+     }
+   - Optionally write this back to:
+     - A job_details table,
+     - Or a JSON column in jobs,
+     - Or a cache layer for quick access.
+6. Make it available to the matcher/prioritizer
+   - The matching/prioritizer agent will use:
+     - Parsed resume (from resume_parser),
+     - Parsed job (from fetcher),
+     - User preferences (e.g. degree, location filters),
+   - to decide:
+     - Whether to skip the job (wrong degree, wrong location),
+     - Or to prioritize it for application.
+Responsibilities vs non-responsibilities
+----------------------------------------
+Fetcher DOES:
+- For a given queued job, go to its page.
+- Extract and clean the full job description + structured metadata.
+- Provide this data for other agents.
+Fetcher DOES NOT:
+- Detect new jobs on LinkedIn.
+- Deduplicate jobs.
+- Decide fit or apply to jobs.
+Those responsibilities belong to the detector (finding jobs), queue/resolver (dedup), and the matching/application agents.

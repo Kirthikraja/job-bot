@@ -4,6 +4,8 @@ from models import init_db  # create DB tables on startup
 from api.routes.resume import router as resume_router  # all resume routes (upload, get JSON, get PDF)
 from dotenv import load_dotenv  # load .env variables (e.g. GEMINI_API_KEY)
 from api.routes.credentials import router as credentials_router
+from api.routes.job import router as job_router  # all job routes (add job, list pending)
+
 import os  # for os.getenv()
 
 load_dotenv()  # load variables from .env into environment
@@ -13,6 +15,7 @@ app = FastAPI(title="Job Bot API")  # create the single app instance
 # Mount the resume routes so /resume, /resume/upload, /resume/file work
 app.include_router(resume_router)  # attach resume router so those URLs are live
 app.include_router(credentials_router)## mount credentials routes so POST /credentials and GET /credentials/{site} work
+app.include_router(job_router)
 
 app.add_middleware(
     CORSMiddleware,  # middleware that adds CORS headers to responses
@@ -30,4 +33,7 @@ def startup():
 @app.get("/health")  # GET /health → quick check if server is up
 def health():
     return {"status": "running"}  # response body
+
+
+
     
