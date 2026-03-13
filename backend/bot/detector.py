@@ -11,6 +11,10 @@
 from sqlalchemy.orm import Session   # to interact with the database
 from . credential_manager import get_linkedin_credentials
 from . import queue
+import os
+from playwright.sync_api import sync_playwright
+
+SESSION_STATE_PATH="linkedin_session.json"
 
 
 #step 
@@ -32,14 +36,32 @@ def detect_jobs_from_linkedin(db: Session):
         return{"status": "missing_linkedin_credentials"}
 
     username, password=creds
-    # TODO: next steps will use username/password to open a browser session,
-    # log into LinkedIn, navigate to notifications, and extract jobs.
-    # For now we just return a stub so we can wire the credentials flow first.
+    # Step 2 (stub for now): ensure we have a logged-in LinkedIn session.
+    # Later this will use Browserbase + Stagehand / browser-use + Claude to
+    # either load a saved session or log in with username/password.
+    session_info=ensure_linkedin_session(username, password)
+    notification_state=open_linkedin_notifications_jobs()
 
     return {
         "status": "credentials_available",
         "username": username,
-        #Note: nevr return the password here
+        "session": session_info,      #Note: nevr return the password here
+        "notification":notification_state
     }
+
+
+
+def open_linkedin_notifications(session_info:dict):
+    """
+    Stub helper for navigating to the LinkedIn Notifications → Jobs tab.
+    Eventually this function will:
+      - Use the active browser/session (e.g. Browserbase + Playwright + Stagehand)
+        to open https://www.linkedin.com/notifications/.
+      - Click on the "Jobs" filter/tab at the top of the notifications page.
+      - Scroll the list to load all recent job alert cards.
+    For now it just returns a dummy value so we can see that the flow reaches here.
+    """
+    return {"status": "notifications_jobs_stub"}
+
 
 
