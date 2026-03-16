@@ -42,9 +42,14 @@ Detector (bot/detector.py) – "Job Scraper Agent"
 
 Goal: Log in to LinkedIn, go to your Notifications → Jobs tab, open each job alert, and push the jobs it finds into our queue/DB.
 
+Browser strategy: primary vs fallback
+- **Primary:** Browserbase. Use Browserbase as the browser host (stealth, remote). We run browser-use (or Stagehand) on top so the agent can handle layout changes and natural-language actions. When available, this is the default.
+- **Fallback:** browser-use + Playwright (local). When not using Browserbase (e.g. running locally or Browserbase unavailable), we use browser-use as the AI layer and Playwright as the execution layer on the same machine. Same flow (session → Notifications → Jobs → open cards → extract jobs → enqueue), but with local browser and anti-detection measures (see below).
+
 Tools the detector uses:
-- **Browserbase** (or similar) – provides a stealth, remote browser so LinkedIn is less likely to flag us as a bot.
-- **Stagehand / browser-use style agent** – uses Playwright as the "hands" and an LLM (Claude 3.5 Sonnet) as the "eyes/brain" so we can give natural language actions like `page.act("Click on the Jobs tab")`.
+- **Browserbase** (primary) – provides a stealth, remote browser so LinkedIn is less likely to flag us as a bot.
+- **browser-use + Playwright** (fallback) – browser-use is the "brain" (LLM decides what to click/do); Playwright is the "hands". Open-source; no Browserbase dependency when running fallback.
+- **Stagehand / browser-use style agent** – uses Playwright as the "hands" and an LLM (Claude 3.5 Sonnet or other) as the "eyes/brain" so we can give natural language actions like "Click on the Jobs tab".
 
 High-level detector flow:
 1. **Secure login / session**
@@ -70,6 +75,24 @@ High-level detector flow:
      - Deduplicate by URL (so the same job from multiple notifications only appears once).
      - Call the queue layer (`bot/queue.py` or POST `/jobs`) to insert a row into the `jobs` table with `status="pending"`.
    - Detector does **not** read the full job description; it only discovers and queues jobs.
+
+Fallback (browser-use + Playwright) – add-on behaviour
+-----------------------------------------------------
+When running the fallback (no Browserbase), we use the same detector flow but with these rules to reduce detection risk and keep behaviour human-like.
+
+Session:
+- **Session first:** Reuse a saved session file (e.g. `linkedin_session.json` – cookies/storage state). If valid, skip login.
+- **Credentials only when needed:** If session is missing or invalid, log in with LinkedIn username/password from the DB (via credential_manager), then save the new session for next time.
+
+Anti-detection:
+- **Random delays** between actions (e.g. 2–6 seconds between opening each notification card). No fixed timing.
+- **Per-run caps:** e.g. max 5–15 notification cards per run; optionally cap total jobs added per run. Run the detector only a few times per day (e.g. 2–4), not continuously.
+- **Headed browser** when possible (real window, not headless).
+- **Real browser channel** (e.g. Chrome or Edge) so the browser fingerprint is less obviously automated.
+- **One session file** reused; avoid creating a new session every run.
+- **Single account:** Automation is on the user’s own LinkedIn account only; no mass or multi-account use.
+
+Outcome: Same detector output (jobs enqueued), but the fallback path is explicitly defined and safer when Browserbase is not in use.
 
 
 Fetcher (planned for fetcher.py) – "JD reader"
