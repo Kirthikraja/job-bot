@@ -64,7 +64,7 @@ def ensure_linkedin_seesion(username:str, password:str)-> dict:
         page.get_by_label("Password").fill(password)
         page.get_by_role("button", name="Sign in").click()
         page.wait_for_url("**/feed**",timeout=20000)
-        context.storage_state(path=SESSION_STATE_PATH)
+        context.storage_state(path=SESSION_STATE_PATH) # if  the seeion is not saved then we login by credential , and then save the session 
         browser.close()
         return {"status": "logged_in"}
 
@@ -112,6 +112,103 @@ def open_linkedin_notifications():
         except Exception as e:
             browser.close()
             return{"status": "error", "message": str(e)}
+
+
+
+#step:
+# It reads job notification cards and enqueues jobs.
+# Step by step:
+# Start a browser (Playwright, headless).
+# Load the saved session from linkedin_session.json into a new context so we’re already logged in.
+# Open one tab in that context.
+# Go to https://www.linkedin.com/notifications/jobs/.
+# Wait a bit for the list of job notification cards to load.
+# Enqueue each job card (company, role, apply_url, etc.) into the database.
+# Return a status (e.g. {"status": "ok", "count": ...}) and close the browser.
+
+def collect_jobs_from_notifications(db: Session,max_cards_per_run:int=10):
+    """
+    Load session, go to Notifications → Jobs, then for each notification card (up to max_cards_per_run):
+    open it, extract job rows (title, company, link), dedupe by URL, call queue.add_job for each new job.
+    Returns {"status": "ok", "added": N, "duplicates": M} or {"status": "error", "message": ...}.
+    """
+    with sync_playwright() as p:
+        browser=p.chromium.launch(headless=True)
+        context_option={}
+        if os.path.exists(SESSION_STATE_PATH):
+            context_option["storage_state"]=SESSION_STATE_PATH
+        context=browser.new_context(**context_option)
+        page=context.new_page()
+        
+        try:
+            page.goto("https://www.linkedin.com/notifications/jobs/", wait_until="domcontentloaded",timeout=30000)
+            time.sleep(2)
+            page.get_by_role("tab",name="Jobs").click()
+            time.sleep(3)
+
+        #Get notification card links. Adjust selector if LinkedIn's DOM differs; inspect the Jobs notifications list.
+        card_links=page.locator('a[href*="/jobs/"]').all()
+        seen_urls=set()
+        card_urls=[]
+        for el in card_links:
+            href=el.get_attribute("href")
+            if href and href not in seen_urls:
+                seen_urls.add(href)
+                if not href.startswith("https"):
+                    href="https://www.linkedin.com"+href
+                card_urls.append(href)
+        card_urls=card_urls[:max_cards_per_run]
+
+        added=0
+        duplicated=0'
+
+
+        for card_url in card_urls:
+            time.sleep(random.uniform(2,6))
+            page.goto(card_url, wait_until="domcontentloaded",timeout=30000)
+            time.sleep(2)
+
+             # Extract job rows on this page. Adjust selector to match LinkedIn job list (e.g. job cards or links to /jobs/view/).
+            job_links=page.locator('a[href*="/jobs/view/"]').all()
+            for job_el in job_links:
+                href=job_el.get_attributes("href")
+                if not href or "?" in href:
+                    href=href.split("?")[0] if href else "" 
+                if not href:
+                    continue
+                if not href.startswith("https"):
+                    href="https://www.linkedin.com"+href
+
+                existing=db.query(Job).filter((Job.apply_url==href)| (job.source_url==href)).first()
+                if existing:
+                    duplicates+=1
+                    continue
+                try:
+                    title = job_el.locator("span").first.inner_text(timeout=2000) if job_el.locator("span").count() else "Unknown"
+                except Exception:
+                    title="Unknown"
+                try:
+                    company = job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").first.inner_text(timeout=2000) if job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").count() else None
+                except Exception:
+                    company =None
+                if not company:
+                    company :"Unknown"
+
+                queue.add_job(db, role=title[:500] if title else "Unknown", company=company, source_url=card_url, apply_url=href, ats_type="linkedin") 
+                added += 1
+  
+        browser.close()
+        return {"status": "ok", "added": added, "duplicates": duplicates}
+    
+    except Exception as e:
+        browser.close()
+        return {"status": "error", "message": str(e)}
+
+
+
+        
+            
+
 
 
 
