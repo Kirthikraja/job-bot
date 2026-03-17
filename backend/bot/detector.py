@@ -17,6 +17,13 @@ from playwright.sync_api import sync_playwright
 
 SESSION_STATE_PATH="linkedin_session.json"
 
+# ensure_linkedin_seesion = ensure we have a saved LinkedIn session we can use later.
+    # If the session file exists and is still valid (we land on the feed, not the login page)
+    #   -> we already have a saved session; return {"status": "session_ok"}.
+    # If the file is missing or the session is invalid
+    #   -> log in with username/password, save the new session to linkedin_session.json, return {"status": "logged_in"}.
+    # So after it runs, we always have a valid saved session: either we reused the existing one or we just created and saved one.
+
 
 def ensure_linkedin_seesion(username:str, password:str)-> dict:
   
@@ -25,6 +32,7 @@ def ensure_linkedin_seesion(username:str, password:str)-> dict:
     - If linkedin_session.json exists and we land on feed (not login), return {"status": "session_ok"}.
     - Else: login with username/password, save storage state, return {"status": "logged_in"}.
     """
+    
     #with is python cleanup it says run syn_playwirgth  , run evrything insdie it and then while levaing the bloack close the file and stop playwirght
     with sync_playwright() as p: # with sync_playwright()  it is async verison . when we call it pyhton waits until the navigatio is done before runing  the next line 
         # Start a Chromium browser (no window). p = Playwright instance. We need a real browser to talk to LinkedIn.
@@ -59,6 +67,56 @@ def ensure_linkedin_seesion(username:str, password:str)-> dict:
         context.storage_state(path=SESSION_STATE_PATH)
         browser.close()
         return {"status": "logged_in"}
+
+
+
+
+
+
+#step:It uses the saved LinkedIn session to open LinkedIn, go to Notifications, then switch to the Jobs tab so we’re on the “Jobs notifications” list (the one with cards like “32m”, “4h”, etc.).
+
+# Step by step:
+
+# Start a browser (Playwright, headless).
+# Load the saved session from linkedin_session.json into a new context so we’re already logged in.
+# Open one tab in that context.
+# Go to https://www.linkedin.com/notifications/.
+# Click the “Jobs” tab on that page (so we’re on the Jobs sub-tab, not “All” or “My posts”).
+# Wait a bit for the list of job notification cards to load.
+# Return a status (e.g. {"status": "ok", "url": ...}) and close the browser.
+
+
+def open_linkedin_notifications():
+    """
+    Load saved session, go to Notifications, click the Jobs tab.
+    Returns {"status": "ok", "url": ...} on success, or {"status": "error", "message": ...} on failure.
+    """
+
+    with sync_playwright() as p:
+        browser=p.chromium.launch(headless=True)
+        context_option={}
+        if os.path.exists(SESSION_STATE_PATH):
+            context_option["storage_state"]=SESSION_STATE_PATH
+        context=browser.new_context(**context_option)
+        page=context.new_page()
+
+        try:
+            page.goto("https://www.linkedin.com/notifications/", wait_until="domcontentloaded",timeout=30000)
+            time.sleep(2)
+            ## Click the Jobs tab (notifications sub-tab). Adjust selector if LinkedIn's DOM differs.
+            page.get_by_role("tab",name="Jobs").click()
+            time.sleep(3)
+            url=page.url
+            browser.close()
+            return{"status": "ok", "url": url}
+        except Exception as e:
+            browser.close()
+            return{"status": "error", "message": str(e)}
+
+
+
+
+
              
 
 
@@ -98,52 +156,6 @@ def ensure_linkedin_seesion(username:str, password:str)-> dict:
 
 
 
-
-#step 
-def detect_jobs_from_linkedin(db: Session):
-    """
-    High-level entrypoint for the detector agent.
-    Current responsibility:
-      1. Try to get LinkedIn credentials.
-      2. If missing → tell the caller so the LLM/chat can ask the user.
-      3. If present → tell the caller that we can proceed to login/navigation next.
-    """
-
-    #step1: try to get linkedin credentials
-    creds=get_linkedin_credentials(db)
-    if creds is None:
-        # We don't have LinkedIn creds yet.
-        # The caller (LLM/chat) should see this and ask the user to provide them,
-        # then save via the credentials API.
-        return{"status": "missing_linkedin_credentials"}
-
-    username, password=creds
-    # Step 2 (stub for now): ensure we have a logged-in LinkedIn session.
-    # Later this will use Browserbase + Stagehand / browser-use + Claude to
-    # either load a saved session or log in with username/password.
-    session_info=ensure_linkedin_session(username, password)
-    notification_state=open_linkedin_notifications_jobs()
-
-    return {
-        "status": "credentials_available",
-        "username": username,
-        "session": session_info,      #Note: nevr return the password here
-        "notification":notification_state
-    }
-
-
-
-def open_linkedin_notifications(session_info:dict):
-    """
-    Stub helper for navigating to the LinkedIn Notifications → Jobs tab.
-    Eventually this function will:
-      - Use the active browser/session (e.g. Browserbase + Playwright + Stagehand)
-        to open https://www.linkedin.com/notifications/.
-      - Click on the "Jobs" filter/tab at the top of the notifications page.
-      - Scroll the list to load all recent job alert cards.
-    For now it just returns a dummy value so we can see that the flow reaches here.
-    """
-    return {"status": "notifications_jobs_stub"}
 
 
 
