@@ -1,0 +1,135 @@
+Agent Orchestration Plan (CrewAI + LangGraph)
+=============================================
+
+Goal
+----
+Use a layered orchestration model:
+- CrewAI handles agent roles (who performs each task).
+- LangGraph handles workflow state and control flow (what happens next, retries, branches, loops).
+
+This gives both:
+- clear separation of responsibilities, and
+- reliable production-grade execution for a stateful pipeline.
+
+
+Why this approach
+-----------------
+Our app is a multi-stage system: detect -> fetch -> match -> apply.
+It needs:
+- queue-driven progression across many jobs,
+- retries for unstable steps,
+- branching for failures/manual review,
+- resumable execution across runs.
+
+CrewAI alone is good for role definition, but LangGraph is stronger for explicit state transitions and durable branching/retry logic.
+So we combine them:
+- CrewAI for role-level agent execution.
+- LangGraph for deterministic workflow orchestration.
+
+
+What CrewAI orchestrates (agent roles)
+--------------------------------------
+1) Detector Agent
+   - Reads LinkedIn Notifications -> Jobs
+   - Opens recent notification cards
+   - Extracts initial job links/metadata
+   - Enqueues unique jobs
+
+2) Fetcher (JD Reader) Agent
+   - Opens queued job URLs
+   - Extracts full job description
+   - Produces structured JD fields
+
+3) Matcher/Prioritizer Agent
+   - Compares structured resume + structured JD
+   - Scores fit and decides priority
+   - Adds explanation for decision
+
+4) Application Agent
+   - Performs Easy Apply / ATS form actions
+   - Maps profile fields and uploads resume
+   - Updates final apply status
+
+5) Reviewer Agent (optional)
+   - Validates quality before submission
+   - Flags uncertain cases for manual review
+
+
+What LangGraph orchestrates (state flow)
+----------------------------------------
+LangGraph controls stage transitions, retries, and fallback paths:
+
+- Pipeline:
+  Detect -> Fetch -> Match -> Apply
+
+- State examples:
+  pending, enriched, matched, applied, failed, manual_review
+
+- Routing examples:
+  - If Fetch succeeds -> Match
+  - If Fetch fails and attempts < max -> Retry Fetch
+  - If attempts >= max -> Manual Review
+  - If Match score low -> Skip/Archive
+  - If Match score high -> Apply
+
+- Loops:
+  - Process each queued job in sequence/batch
+  - Continue until queue is exhausted or run limit is reached
+
+- Durability:
+  - Persist state/status in DB
+  - Resume from latest known state after restart/failure
+
+
+RAG integration in this architecture
+------------------------------------
+RAG is used by agents that need grounded context (especially Matcher).
+
+- Knowledge Base:
+  - Parsed resume
+  - Job descriptions and related metadata
+
+- RAG flow:
+  - Retrieve relevant chunks from KB
+  - Inject into LLM context
+  - Generate grounded decision/explanation
+
+Without RAG:
+- KB data exists but is not automatically used in each model call.
+With RAG:
+- retrieval is automatic, context is relevant, output is more reliable and explainable.
+
+
+Failure handling example (why LangGraph is critical)
+----------------------------------------------------
+Use case: JD extraction fails for a job.
+
+Graph behavior:
+1) Fetch node fails -> attempts += 1
+2) If attempts < 3 -> route to RetryFetch -> back to Fetch
+3) If attempts >= 3 -> route to ManualReview
+4) Continue pipeline for other jobs (do not stop whole run)
+
+This is the main reason LangGraph is selected as the primary orchestration layer.
+
+
+Implementation priority
+-----------------------
+Phase 1 (current practical path):
+- Stabilize detector/fetch queue flow
+- Add LangGraph state machine around stages
+
+Phase 2:
+- Add CrewAI role wrappers for each agent stage
+
+Phase 3:
+- Add/expand RAG for matching and explanation quality
+
+Phase 4:
+- Add advanced reviewer/comms agents if needed
+
+
+Interview-ready one-liner
+-------------------------
+We use CrewAI for agent role orchestration and LangGraph for stateful pipeline control (branching, retries, loops, and durable progression), with RAG grounding resume/job-specific decisions.
+
