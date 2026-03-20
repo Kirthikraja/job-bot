@@ -25,7 +25,7 @@ SESSION_STATE_PATH="linkedin_session.json"
     # So after it runs, we always have a valid saved session: either we reused the existing one or we just created and saved one.
 
 
-def ensure_linkedin_seesion(username:str, password:str)-> dict:
+def ensure_linkedin_session(username:str, password:str)-> dict:
   
     """
     Ensure we have a valid LinkedIn session (fallback: Playwright).
@@ -146,63 +146,127 @@ def collect_jobs_from_notifications(db: Session,max_cards_per_run:int=10):
             page.get_by_role("tab",name="Jobs").click()
             time.sleep(3)
 
-        #Get notification card links. Adjust selector if LinkedIn's DOM differs; inspect the Jobs notifications list.
-        card_links=page.locator('a[href*="/jobs/"]').all()
-        seen_urls=set()
-        card_urls=[]
-        for el in card_links:
-            href=el.get_attribute("href")
-            if href and href not in seen_urls:
-                seen_urls.add(href)
-                if not href.startswith("https"):
-                    href="https://www.linkedin.com"+href
-                card_urls.append(href)
-        card_urls=card_urls[:max_cards_per_run]
+            #Get notification card links. Adjust selector if LinkedIn's DOM differs; inspect the Jobs notifications list.
+            card_links=page.locator('a[href*="/jobs/"]').all()
+            seen_urls=set()
+            card_urls=[]
+            for el in card_links:
+                href=el.get_attribute("href")
+                if href and href not in seen_urls:
+                    seen_urls.add(href)
+                    if not href.startswith("https"):
+                        href="https://www.linkedin.com"+href
+                    card_urls.append(href)
+            card_urls=card_urls[:max_cards_per_run]
 
-        added=0
-        duplicated=0'
+            added=0
+            duplicates=0
 
 
-        for card_url in card_urls:
-            time.sleep(random.uniform(2,6))
-            page.goto(card_url, wait_until="domcontentloaded",timeout=30000)
-            time.sleep(2)
+            for card_url in card_urls:
+                time.sleep(random.uniform(2,6))
+                page.goto(card_url, wait_until="domcontentloaded",timeout=30000)
+                time.sleep(2)
 
              # Extract job rows on this page. Adjust selector to match LinkedIn job list (e.g. job cards or links to /jobs/view/).
-            job_links=page.locator('a[href*="/jobs/view/"]').all()
-            for job_el in job_links:
-                href=job_el.get_attributes("href")
-                if not href or "?" in href:
-                    href=href.split("?")[0] if href else "" 
-                if not href:
-                    continue
-                if not href.startswith("https"):
-                    href="https://www.linkedin.com"+href
+                job_links=page.locator('a[href*="/jobs/view/"]').all()
+                for job_el in job_links:
+                    href=job_el.get_attribute("href")
+                    if not href or "?" in href:
+                        href=href.split("?")[0] if href else "" 
+                    if not href:
+                        continue
+                    if not href.startswith("https"):
+                        href="https://www.linkedin.com"+href
 
-                existing=db.query(Job).filter((Job.apply_url==href)| (job.source_url==href)).first()
-                if existing:
-                    duplicates+=1
-                    continue
-                try:
-                    title = job_el.locator("span").first.inner_text(timeout=2000) if job_el.locator("span").count() else "Unknown"
-                except Exception:
-                    title="Unknown"
-                try:
-                    company = job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").first.inner_text(timeout=2000) if job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").count() else None
-                except Exception:
-                    company =None
-                if not company:
-                    company :"Unknown"
+                    existing=db.query(Job).filter((Job.apply_url==href)| (Job.source_url==href)).first()
+                    if existing:
+                        duplicates+=1
+                        continue
+                    try:
+                        title = job_el.locator("span").first.inner_text(timeout=2000) if job_el.locator("span").count() else "Unknown"
+                    except Exception:
+                        title="Unknown"
+                    try:
+                        company = job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").first.inner_text(timeout=2000) if job_el.locator("xpath=./ancestor::*[.//span][1]//span[2]").count() else None
+                    except Exception:
+                        company =None
+                    if not company:
+                        company ="Unknown"
 
-                queue.add_job(db, role=title[:500] if title else "Unknown", company=company, source_url=card_url, apply_url=href, ats_type="linkedin") 
-                added += 1
+                    queue.add_job(db, role=title[:500] if title else "Unknown", company=company, source_url=card_url, apply_url=href, ats_type="linkedin") 
+                    added += 1
   
-        browser.close()
-        return {"status": "ok", "added": added, "duplicates": duplicates}
+            browser.close()
+            return {"status": "ok", "added": added, "duplicates": duplicates}
     
-    except Exception as e:
-        browser.close()
-        return {"status": "error", "message": str(e)}
+        except Exception as e:
+            browser.close()
+            return {"status": "error", "message": str(e)}
+
+
+
+
+def detect_jobs_from_linkedin(db: Session , max_jobs_per_run:int=10):
+    """
+
+    Main detector entrypoint:
+    1) Get LinkedIn credentials
+    2) Ensure valid saved session
+    3) Open Notifications -> Jobs
+    4) Collect/enqueue jobs from notification cards
+
+    """
+
+    #1 credential
+    creds=get_linkedin_credentials(db)
+    if creds is None:
+        return {"status":"missing_linkeind_credentials"}
+
+    username,password=creds
+
+    #2 ensure valid saved session
+    session_info=ensure_linkedin_session(username,password)
+    if session_info.get("status") not in ("session_ok","logged_in"):
+        return{
+            "status":"error",
+            "step":"ensure  session",
+            "session":session_info,
+        }
+
+
+    #3 open notfication/job view
+    notifications_info=open_linkedin_notifications()
+    if notifications_info.get("status") != "ok":
+        return{
+            "status":"error",
+            "step":"open notifications", # failure happened while opening notifications/jobs page.
+            "session": session_info,
+            "notifications":notifications_info,
+
+        }
+
+
+    #4 collect+ enqueue
+    collect_info=collect_jobs_from_notifications(db,max_cards_per_run=max_jobs_per_run)
+
+
+    if collect_info.get("status") != "ok":
+        return{
+            "status":"error",
+            "step":"collect jobs",
+            "session": session_info,
+            "notifications":notifications_info,
+            "collect":collect_info,
+        }
+
+    return{
+        "status":"ok",
+        "session": session_info,
+        "notifications":notifications_info,
+        "collect":collect_info,
+    }
+
 
 
 
