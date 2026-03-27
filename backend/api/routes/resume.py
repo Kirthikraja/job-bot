@@ -52,6 +52,7 @@ from ai.resume_parser import (
     save_parsed_resume,
     load_parsed_resume,
 )
+from ai.rag import ingest_resume
 import os   
 import shutil   # copyfileobj; to save uploaded file bytes to disk
 
@@ -83,10 +84,13 @@ async def upload_resume(file:UploadFile=File(...)):  # async = handler can pause
     try:
         raw=parse_resume(UPLOAD_PATH)
         validated=validate_parsed_resume(raw) #fuction iside the resume_parse.py
-        save_parsed_resume(validated)   
+        save_parsed_resume(validated)
+        rag_result = ingest_resume()
         return {
-            "message":"Resume uploaded and parsed successfully",
-            "data":validated ,}
+            "message": "Resume uploaded and parsed successfully",
+            "data": validated,
+            "rag": rag_result,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")

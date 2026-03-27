@@ -13,3 +13,8 @@ cryptography
 python-multipart
 websockets
 pytest
+langchain-core
+langchain-text-splitters
+langchain-chroma
+langchain-google-genai
+chromadb
