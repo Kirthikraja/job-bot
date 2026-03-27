@@ -81,7 +81,7 @@ def get_vector_store() -> Chroma:
     )
 
 
-def ingest_resume() -> Dict[str,Any]:
+def ingest_resume() -> Dict[str,Any]: #dictionary whose keeys are string  and whose values  can be anything 
     from.resume_parser import load_parsed_resume
 
     try:
@@ -92,17 +92,21 @@ def ingest_resume() -> Dict[str,Any]:
 
     try:
         text=json.dumps(data,ensure_ascii=False,indent=2)
-        if not text.strip():
+        if not text.strip(): # text.strip()the string after trimming ends. to be sure there is real content before you spend work on chunking, embedding
             return{"status":"skipped","message":"Empty resume data"}
 
-        splitter=RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=150,)
+        #creates a text splititer object 
+        splitter=RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=150,) #chunk size 1000 characters and neibouding chunk spend 150 character at the boundary
 
         chunks=splitter.split_text(text)
 
-        docs:List[Document]=[]
+        docs:List[Document]=[] #docs is variable name and List[Document] is type hinting. List is a built-in type that means a sequence of items. Document is a custom type defined elsewhere.
         indexed_at=datetime.utnow().isoformat()+"Z"
 
 
+
+        ## Build one LangChain Document per text chunk: page_content is the chunk string;
+# metadata tags it as resume, records chunk order (i) and when this ingest run happened. 
         for i, chunk in enumerate(chunks):
             docs.append(Document(page_content=chunk,metadata={"source_type":"resume","doc_id":"resume","chunk_index":str(i),"indexed_at": indexed_at,},))
             store=get_vector_store()
