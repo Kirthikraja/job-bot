@@ -43,3 +43,13 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+
+
+
+load_dotenv() # Load environment variables from .env so Gemini API key and config are available at runtime.
+#load_dotenv() is a function from python-dotenv.
+#Its job is simple: read .env file and put values into environment variables (os.environ) so code can read them (like GEMINI_API_KEY, DATABASE_URL, etc.).
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))# Absolute folder path of this rag.py file.
+PERSISTS_DIR=os.path.join(BASE_DIR, "persists") # Local folder where Chroma will persist vectors on disk.
+COLLECTION_NAME="jobbot_kb"  ## Collection name used inside Chroma to group this project's embeddings.
