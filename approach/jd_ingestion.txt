@@ -1,0 +1,54 @@
+Job description ingestion — design note
+========================================
+
+This document explains why job descriptions are ingested into the retrieval layer, which postings are indexed, when that happens, how long indexed data is kept, and how the design avoids leaving users without answers when they ask about past applications. The product is built around an agent that discovers jobs, narrows the list, and applies where fit is strong; it is not built around the user manually selecting arbitrary LinkedIn URLs as the primary workflow.
+
+
+Why ingestion is needed at all
+------------------------------
+
+A large language model is not trained on this user’s resume or on each employer’s job description. Retrieval-augmented generation requires a searchable store: text split into chunks, converted to embeddings, and optionally tagged with metadata. Ingestion is the process that takes the raw job description (or resume) text, chunks it, embeds it, and writes it into Chroma under a named collection (for example jobbot_kb), with persistence on disk under the configured persist directory. Without that step, the system cannot run semantic search over the job description. The alternative would be to paste the entire job description into every model call, which fails when descriptions are long, when many jobs exist, and when cost and answer quality matter.
+
+
+The problem of scale: many job descriptions, not all should be indexed
+--------------------------------------------------------------------
+
+LinkedIn and the detector can surface a large number of roles. Indexing every notification would inflate the vector store, increase embedding and storage cost, and add irrelevant matches when the model retrieves context. The intended rule is therefore explicit: the system does not ingest “all of LinkedIn.” It ingests the description for a single job that the application already represents as a row in the database, with a stable identifier such as job_id and the usual source and apply URLs.
+
+The default policy is to ingest only when the agent has decided that a job belongs in the set that will actually be applied to—after fit checks and policy rules, not for every card that was merely detected on the feed. Earlier stages of the pipeline, such as quick screening or preliminary ranking, should rely on the full job description text stored in the relational database on the job record (for example in a description field) and, where appropriate, on single-request model calls that do not require every candidate to live in the vector index. That way Chroma stays aligned with jobs the product truly acts on, rather than with the entire stream of surfaced postings.
+
+
+How this relates to the main product versus optional chat
+----------------------------------------------------------
+
+The primary behaviour is agent-driven: discover jobs, assess fit, submit applications. The user may ask occasional questions in chat, but chat is not the main trigger for job description ingestion in that core design. For the main loop, ingestion should be driven by the pipeline: once the fetcher has the full description text and the apply path chooses to use retrieval during application, the system indexes that description for semantic retrieval. It should not depend on the user pasting a link to a posting as the normal path.
+
+If the user pastes external text for a one-off question, that content can usually be placed directly in the model context for that request without indexing. If the pasted material is very long or must be reused across several turns, the implementation can use a short-lived ephemeral index with a time limit, or summarize first, depending on engineering trade-offs.
+
+
+Avoiding customer inconvenience when vectors are removed
+--------------------------------------------------------
+
+If job description chunks existed only in Chroma and were deleted after a short time-to-live, a user who later asks what the posting said, or why an application was submitted, might receive no useful retrieval results unless another source of truth exists.
+
+The relational database must therefore hold the canonical full job description and the application history (identifiers, timestamps, status, and related fields). Chroma should be treated as a tool to accelerate semantic retrieval during apply and similar short-lived steps, not as the only place the job description ever lived. After vectors expire, answers for support or in-product explanations should come from the database (full text or derived summaries), or the system can re-embed a specific job on demand if a retrieval-style answer is explicitly required again.
+
+
+Time-to-live for indexed job description chunks
+-----------------------------------------------
+
+The vector store should stay bounded and the indexed material for a given apply run should remain relevant for operational retrieval. Job description chunks that were ingested for the apply set may therefore be kept only for a limited window—for example twenty-four hours—and then removed using metadata such as indexed_at and a scheduled cleanup task. Resume or profile material may follow a longer retention policy because it is user-specific and reused across many operations. The exact duration can be adjusted if real usage shows that most follow-up questions happen within a longer window; the principle is that vectors in Chroma can expire while the database record of the job and the application does not.
+
+
+User-supplied context from outside the product
+----------------------------------------------
+
+When the user provides text that is not already stored (for example an email or a pasted excerpt), short or medium passages can be sent in the prompt for that interaction without ingestion. Very long passages may require chunking, optional short-lived ingestion, or summarization first. Any user-supplied text should be handled as untrusted input from a safety perspective (for example prompt-injection awareness, and no execution of content as code).
+
+
+Concrete policy summary
+-----------------------
+
+Job descriptions are ingested so that retrieval-augmented generation can pull the right pieces of text during apply and similar grounded reasoning steps. Indexing is per job identifier and, by default, only for jobs that are in the apply set, not for every detected posting. Screening and early ranking should use database-stored description text and non-vector model calls where that is sufficient. Ingestion for the core loop is pipeline-driven, not chat-driven. The database is the system of record for descriptions and application history; Chroma is supplementary and may use a time-to-live for job description vectors. User-pasted context is usually handled inline in the prompt unless length or reuse justifies ephemeral indexing. Implementation touchpoints include backend/ai/rag.py for ingest and retrieval helpers, backend/bot/fetcher.py for obtaining and persisting description text before ingest policy runs, and backend/models/job.py for canonical fields such as description on the job record.
+
+This note should be revised if the time-to-live duration, the ingest trigger, or the boundary between screening and apply changes.
