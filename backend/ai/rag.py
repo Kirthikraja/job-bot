@@ -58,6 +58,8 @@ COLLECTION_NAME="jobbot_kb"  ## Collection name used inside Chroma to group this
 
 PARSED_RESUMES_DIR="uploads/parsed_resumes"
 
+# resume_id comes from the upload route (resume.py), not from this file — we only build the path.
+
 def parsed_resume_json_path(resume_id:str)->str:# Function takes resume_id string; returns string path to that resume's JSON file.
     safe="".join(c for c in resume_id if c.isalnum() or c in "-_") # Keep only letters, digits, hyphen, underscore; drop anything else (e.g. ../).
     if safe!= resume_id or not safe:# If anything was stripped, or result is empty, the id was invalid or unsafe.
@@ -65,7 +67,11 @@ def parsed_resume_json_path(resume_id:str)->str:# Function takes resume_id strin
     return os.path.join(PARSED_RESUMES_DIR,f"{safe}.json")# Build path: folder constant + filename "<safe>.json".
 
 
-def parsed_resume_json_path(resume_id:str)->str:
+def _resume_doc_id(resume_id:str)->str: # Helper: one stable label per resume for Chroma metadata (not the file path).
+    return f"resume :{resume_id}" # Prefix + id so doc_id is unique per version and easy to filter (e.g. resume:abc123).
+
+
+
 
 
 #step: build the embedding client
@@ -94,53 +100,63 @@ def get_vector_store() -> Chroma:
     )
 
 
-def ingest_resume(resume_key) -> Dict[str,Any]: #dictionary whose keeys are string  and whose values  can be anything 
-    from.resume_parser import load_parsed_resume
+def ingest_resume(resume_id: str) -> Dict[str, Any]:  # Ingest one resume version into Chroma; returns a small status dict.
+    from .resume_parser import load_parsed_resume  # Import here so importing ai.rag does not always load resume_parser.
 
-    try:
-        data=load_parsed_resume()
+    try:  # Validate resume_id and build JSON path (may raise ValueError).
+        path = parsed_resume_json_path(resume_id)  # e.g. uploads/parsed_resumes/<id>.json — must match save_parsed_resume path.
+    except ValueError as e:  # Bad characters or empty id after sanitization.
+        return {"status": "error", "message": str(e), "resume_id": resume_id}  # Tell caller the id was rejected.
 
-    except FileNotFoundError:
-        return {"status": "error", "message": "No parsed resume found"}
+    try:  # Load parsed dict from disk. #load_parsed_resume opens the JSON file, runs json.load, and returns a dict (the parsed resume). If the file is missing, it raises FileNotFoundError instead.
+        data = load_parsed_resume(save_path=path)  # Same path resume.py should have used when saving after upload.
+    except FileNotFoundError:  # JSON not there yet or wrong path / id mismatch.
+        return {  # Do not crash — skip indexing.
+            "status": "skipped",  # Not a hard failure of the whole app.
+            "reason": "no_parsed_resume",  # Machine-readable reason.
+            "resume_id": resume_id,  # Echo which id was requested.
+            "path": path,  # Where we looked — helps debugging.
+        }
 
-    try:
-        text=json.dumps(data,ensure_ascii=False,indent=2)
-        if not text.strip(): # text.strip()the string after trimming ends. to be sure there is real content before you spend work on chunking, embedding
-            return{"status":"skipped","message":"Empty resume data"}
+    try:  # Main path: stringify, chunk, embed via Chroma, upsert.
+        text = json.dumps(data, ensure_ascii=False, indent=2)  # One string of the whole resume dict for splitting.
+        if not text.strip():  # Guard: nothing meaningful to index.
+            return {"status": "skipped", "message": "Empty resume data", "resume_id": resume_id}  # Skip Chroma work.
 
-        #creates a text splititer object 
-        splitter=RecursiveCharacterTextSplitter(chunk_size=1000,chunk_overlap=150,) #chunk size 1000 characters and neibouding chunk spend 150 character at the boundary
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)  # Tool that cuts text into overlapping pieces.
+        chunks = splitter.split_text(text)  # List of chunk strings.
 
-        chunks=splitter.split_text(text)
+        indexed_at = datetime.utcnow().isoformat() + "Z"  # Timestamp string stored on every chunk’s metadata.
+        doc_id = _resume_doc_id(resume_id)  # Same doc_id on all chunks of this resume — used for delete/filter.
 
-        docs:List[Document]=[] #docs is variable name and List[Document] is type hinting. List is a built-in type that means a sequence of items. Document is a custom type defined elsewhere.
-        indexed_at=datetime.utnow().isoformat()+"Z"
+        docs: List[Document] = []  # Will hold one LangChain Document per chunk.
+        for i, chunk in enumerate(chunks):  # i = chunk order; chunk = text of that piece.
+            docs.append(  # Add one document to the list.
+                Document(  # LangChain wrapper: text + metadata for Chroma.
+                    page_content=chunk,  # The actual text Chroma embeds and searches.
+                    metadata={  # Filterable fields stored with the vector.
+                        "source_type": "resume",  # So you can tell resume chunks from future JD chunks, etc.
+                        "doc_id": doc_id,  # Groups all chunks for this resume version for delete/replace.
+                        "resume_id": resume_id,  # Redundant with doc_id if doc_id is resume:<id> — handy for debugging/filters.
+                        "chunk_index": str(i),  # Position in the split order for this ingest run.
+                        "indexed_at": indexed_at,  # When this batch was written.
+                    },
+                )
+            )
 
+        store = get_vector_store()  # Open Chroma with embedder + persist dir — once per ingest, not per chunk.
 
+        try:  # Remove previous vectors for this doc_id so re-ingest does not duplicate stale chunks.
+            old = store.get(where={"doc_id": doc_id})  # Fetch existing row ids for this logical resume.
+            old_ids = old.get("ids") if old else None  # Chroma returns dict with "ids" list (or missing).
+            if old_ids:  # Only delete if something was indexed before for this doc_id.
+                store.delete(ids=old_ids)  # Drop old chunk vectors for this resume version only.
+        except Exception:  # First run or API quirk — safe to continue and add fresh docs.
+            pass  # Intentionally ignore errors here.
 
-        ## Build one LangChain Document per text chunk: page_content is the chunk string;
-# metadata tags it as resume, records chunk order (i) and when this ingest run happened. 
-        for i, chunk in enumerate(chunks):
-            docs.append(Document(page_content=chunk,metadata={"source_type":"resume","doc_id":"resume","chunk_index":str(i),"indexed_at": indexed_at,},))
-            store=get_vector_store()
+        if docs:  # Only call API if there is at least one chunk.
+            store.add_documents(docs)  # Chroma embeds each chunk and persists.
 
-        #remove old resume chunks so re-index does not duplicate
-
-        try:
-            old = store.get(where={"doc_id":"resume"})
-            old_ids=old.get("ids") if old else None
-            if old_ids:
-                store.delete(ids=old_ids)
-
-        except Exception:
-            pass
-
-        if docs:
-            store.add_documents(docs)
-
-        return {"status": "ok", "chunks_indexed": len(docs)}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
+        return {"status": "ok", "chunks_indexed": len(docs), "resume_id": resume_id}  # Success summary for API/logs.
+    except Exception as e:  # Embedding failure, Chroma error, etc.
+        return {"status": "error", "message": str(e), "resume_id": resume_id}  # Surface error without crashing caller.
