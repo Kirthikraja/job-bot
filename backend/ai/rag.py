@@ -56,6 +56,18 @@ PERSISTS_DIR=os.path.join(BASE_DIR, "persists") # Local folder where Chroma will
 COLLECTION_NAME="jobbot_kb"  ## Collection name used inside Chroma to group this project's embeddings.
 
 
+PARSED_RESUMES_DIR="uploads/parsed_resumes"
+
+def parsed_resume_json_path(resume_id:str)->str:# Function takes resume_id string; returns string path to that resume's JSON file.
+    safe="".join(c for c in resume_id if c.isalnum() or c in "-_") # Keep only letters, digits, hyphen, underscore; drop anything else (e.g. ../).
+    if safe!= resume_id or not safe:# If anything was stripped, or result is empty, the id was invalid or unsafe.
+        raise ValueError("resume_id must be non empty alphanumeric and underscores only")# Stop instead of building a bad path.
+    return os.path.join(PARSED_RESUMES_DIR,f"{safe}.json")# Build path: folder constant + filename "<safe>.json".
+
+
+def parsed_resume_json_path(resume_id:str)->str:
+
+
 #step: build the embedding client
 # Build the Google embedding client used by Chroma: reads GEMINI_API_KEY, returns a
 # GoogleGenerativeAIEmbeddings object (hosted model text-embedding-004). It does not
