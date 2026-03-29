@@ -1,0 +1,63 @@
+RAG vs context — discussion approach (job-bot)
+==============================================
+Last consolidated from product/architecture conversation.
+
+1) Default stance
+-----------------
+- Do NOT force RAG for credibility or buzzwords.
+- Default path: CONTEXT — load what the turn needs from storage (DB, JSON, PDF text)
+  and put it in the LLM prompt when it fits the model context window.
+- Add chunk-based RAG (embed chunks, vector store, retrieve top-k, then LLM) only when
+  something in the product actually demands it (see section 4).
+
+2) “Consultant / multi-resume library” (separate from chunk RAG)
+----------------------------------------------------------------
+Brief: user may have many resume versions (PM vs SM vs TL, tailored variants over time).
+For each NEW job (JD), the agent should RANK resumes by fit, not pick “latest upload.”
+
+Technical shape (Phase 1):
+- SQL: many resumes per user; each row has resume_id, raw text or file path, metadata.
+- One embedding vector per resume VERSION (whole-document or normalized full text) for
+  SIMILARITY to the JD embedding — cosine similarity, sorted scores.
+- Return [{ resume_id, score }, ...]; user confirms; apply uses EXACT stored artifact
+  for that resume_id (no LLM rewrite in Phase 1).
+- Applications table stores resume_id used (traceability).
+
+This is embedding-based RANKING + SQL. It is NOT the same as classic RAG (chunk
+retrieval + LLM generation). You can use both in one product: ranking vectors for
+matcher; chunk RAG later for Q&A over huge JD libraries if needed.
+
+3) Two resumes / re-ingest (vector index hygiene)
+-------------------------------------------------
+If chunk index is used per resume slot:
+- Use stable metadata per logical resume (e.g. doc_id or resume_key per version).
+- Re-upload for ONE slot: delete ONLY vectors for that doc_id, then re-index.
+- Do NOT delete all “resume” vectors when updating one variant — otherwise compare
+  or history workflows lose the other resume in the index.
+
+4) When chunk RAG is justified
+-----------------------------
+Use chunk RAG when at least one is true:
+- Many full-text JDs (or long docs) stored over time and the user asks search-style
+  questions across them without pasting every JD each turn.
+- Deliberate product need for retrieval + LLM over a large growing text corpus.
+
+Often NOT required:
+- One short resume (typical 1–2 pages) + one JD + single Q&A — full context is enough.
+- “Jobs applied in last 24 hours” — database query (+ optional LLM formatting), not
+  vector search.
+
+Alternatives to chunk RAG for “search many JDs”:
+- Full-text search in SQL (e.g. tsvector) without embeddings, if keyword match is enough.
+
+5) Upload-once behavior
+-----------------------
+User uploads resume once (or when changing it). Backend reloads from storage later.
+That persistence does NOT by itself require RAG; it only means the file/JSON lives
+on the server.
+
+6) Summary line for the team
+----------------------------
+Default: context from DB/files. Use chunk RAG when scale or search demands it.
+Consultant matcher: vectors + SQL for ranking; Phase 1 no resume editing; trace
+resume_id on applications.

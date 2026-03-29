@@ -37,6 +37,7 @@ import json
 from datetime import datetime #it lets you create/read timestamps like “2026-03-04T18:22:10 . we used it cause to stamp metadata when chunks are indexed, e.g. created_at, indexed_at, updated_at
 from typing import List, Dict, Any, Optional  #typing means telling Python what kind of data a variable or function should use.
 
+from typing import Literal
 from dotenv import load_dotenv
 
 from langchain_core.documents import Document  # Standard LangChain document object: text chunk + metadata
@@ -81,7 +82,7 @@ def get_vector_store() -> Chroma:
     )
 
 
-def ingest_resume() -> Dict[str,Any]: #dictionary whose keeys are string  and whose values  can be anything 
+def ingest_resume(resume_key) -> Dict[str,Any]: #dictionary whose keeys are string  and whose values  can be anything 
     from.resume_parser import load_parsed_resume
 
     try:
