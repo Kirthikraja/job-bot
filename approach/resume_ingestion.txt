@@ -1,96 +1,102 @@
-Resume ingestion (parsed JSON → Chroma chunks) — job-bot
-=========================================================
-This note records what “resume ingestion” means in this project, how it fits
-multi-resume storage, and how it connects to resume_parser and the API.
+Resume ingestion — how it works (job-bot)
+==========================================
 
-1) Two different things (do not confuse)
-----------------------------------------
-- KB / filesystem: parsed resume as JSON (and the PDF). Canonical source for
-  “what the resume says.”
-- Vector index (Chroma under backend/ai/persists/): chunked + embedded copies
-  used for similarity search when you enable chunk RAG.
+Who should read this
+--------------------
+Anyone wiring uploads, RAG, or debugging “why is my resume not in Chroma?”
+You do not need to already know LangChain; terms are defined below.
 
-Ingestion only updates the vector index from the JSON; it does not replace
-saving the JSON or the PDF.
 
-2) Pipeline before RAG (resume_parser + upload)
------------------------------------------------
-- User uploads PDF.
-- extract_text_from_pdf → parse_resume (Gemini) → validate_parsed_resume.
-- save_parsed_resume writes structured dict to a JSON file.
+What “resume ingestion” means (plain)
+--------------------------------------
+After we parse a resume, we have a JSON file on disk (structured fields:
+name, skills, jobs, etc.). “Ingestion” means: read that JSON, cut the text
+into smaller pieces (“chunks”), turn each piece into a vector embedding, and
+store those vectors in Chroma (a local vector database under
+backend/ai/persists/). That index is used later when you want search-style
+retrieval over resume text (chunk RAG). It is NOT the same as saving the JSON
+file — ingestion is an extra step on top of the JSON.
 
-For multiple resume versions, the API must pass an explicit save_path that
-matches what ingestion reads (see section 4). The default
-uploads/parsed_resume.json is the single-resume layout.
 
-3) What ingest_resume(resume_id) does (rag.py)
------------------------------------------------
-- parsed_resume_json_path(resume_id) → uploads/parsed_resumes/<id>.json
-  (resume_id is validated for safe path characters; it is not created inside
-  rag.py — it must be supplied by the upload route, e.g. resume.py).
-- load_parsed_resume(save_path=path) → Python dict (json.load already happened
-  inside that function).
-- json.dumps(data, ensure_ascii=False, indent=2) → one string (dict → JSON
-  text) so RecursiveCharacterTextSplitter can split it.
-- RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150) → list
-  of chunk strings.
-- Each chunk becomes a langchain_core.documents.Document with metadata:
-  source_type=resume, doc_id (shared label for all chunks of this version),
-  resume_id, chunk_index, indexed_at.
-- get_vector_store() → Chroma with Google embeddings (GEMINI_API_KEY).
-- Delete existing vectors where doc_id matches this version only (re-ingest
-  replaces that resume’s slice; other resume_ids untouched).
-- add_documents(docs) → embed and persist.
+Words you will see
+------------------
+- resume_id: A string that names one resume VERSION in your app (example:
+  "pm-v1" or a UUID). You choose it in the API when handling upload — not
+  inside the PDF and not invented by rag.py.
+- Parsed JSON file: The output of save_parsed_resume — one file per
+  resume_id when you use multi-resume paths (see below).
+- Chunk: A substring of the JSON text (roughly up to 1000 characters) so
+  embeddings stay within model limits and search can return a small relevant
+  slice.
+- Chroma: Vector store; each row has text + metadata + embedding.
+- doc_id: A metadata field on every chunk. All chunks from the SAME resume
+  version share the SAME doc_id value so we can delete or search “only this
+  resume” without touching others.
 
-Returns a small dict: ok / skipped / error plus resume_id and chunk count or
-reason.
 
-4) resume_id and doc_id
------------------------
-- resume_id: chosen in the upload layer (client, uuid, or DB primary key).
-  Must be unique per resume version you want to keep separate.
-- _resume_doc_id(resume_id): builds the Chroma metadata doc_id string
-  (e.g. resume:<resume_id>) so all chunks for one version share one filter key.
-  doc_id is metadata field name in Chroma; the value ties chunks together for
-  delete and scoped search. You could use resume_id alone as doc_id if the
-  collection only ever holds resume chunks.
+End-to-end story (happy path)
+-----------------------------
+1) User uploads a PDF.
+2) Backend saves the PDF somewhere (path is your choice per version).
+3) resume_parser: PDF text → Gemini → dict → validate_parsed_resume.
+4) save_parsed_resume MUST write that dict to the JSON path that ingestion
+   will read. For multiple resumes that path is:
+   uploads/parsed_resumes/<resume_id>.json
+   (built by parsed_resume_json_path in rag.py — use the SAME resume_id for
+   save and ingest).
+5) ingest_resume(resume_id) in rag.py:
+   - Builds the same path, loads the dict.
+   - Converts dict → one big string (json.dumps) so we can split text.
+   - Splits into chunks, wraps each in a Document with metadata (doc_id,
+     resume_id, chunk_index, …).
+   - Opens Chroma, deletes OLD chunks for this doc_id only, adds NEW chunks.
+6) Result: vectors for that resume version are searchable; other versions
+   stay as they are.
 
-5) Path alignment (critical)
-----------------------------
-If save_parsed_resume uses uploads/parsed_resume.json but ingest reads
-uploads/parsed_resumes/<id>.json, ingestion will skip (file not found).
-Save and ingest must use the same path for the same resume_id.
 
-6) resume_parser.py changes
----------------------------
-No change required inside resume_parser for multi-resume: it already accepts
-save_path. Callers must pass the correct path per version.
-
-7) API (resume.py) — still to wire for multi-resume
----------------------------------------------------
-As of this doc, the upload route should be updated to:
-- Determine resume_id per request.
-- save_parsed_resume(validated, save_path=parsed_resume_json_path(resume_id)).
-- ingest_resume(resume_id).
-- Optionally store PDF per version (e.g. uploads/resume_<id>.pdf).
-
-Until that wiring exists, ingest_resume(resume_id) will not see files saved
-only to the default single path.
-
-8) Relation to “consultant / ranking” brief
+Why we json.dumps the dict after loading it
 -------------------------------------------
-Whole-document embedding per resume vs JD for ranking is a separate path
-(SQL + one vector per resume). Chunk RAG in rag.py is for retrieval/Q&A over
-text chunks when the product needs it. Both can coexist: ranking uses one
-vector per resume; chunk ingest uses many vectors per resume.
+load_parsed_resume returns Python objects (dict/list/str). The text splitter
+only works on a string. dumps turns the dict back into JSON TEXT so we have
+one string to split. The file on disk was already JSON; we reload as dict,
+then stringify again on purpose for chunking.
 
-9) Dependencies / env
----------------------
-- GEMINI_API_KEY for GoogleGenerativeAIEmbeddings.
-- langchain-chroma, chromadb, langchain-google-genai, etc. (see requirements).
 
-10) Optional next step in rag.py
---------------------------------
-retrieve_resume_context(question, resume_id, k) or full rag_query: similarity
-search with filter on doc_id, then LLM — only when you need answers from chunks
-instead of full-context prompts.
+The mistake that breaks everything
+-----------------------------------
+If the upload route saves to the DEFAULT file only:
+  uploads/parsed_resume.json
+but ingest_resume looks for:
+  uploads/parsed_resumes/<resume_id>.json
+then ingestion returns skipped / file not found. SAVE PATH and INGEST PATH
+must match for the same resume_id.
+
+
+What rag.py does NOT do
+-----------------------
+- It does not create resume_id (resume.py / client / DB does).
+- It does not parse the PDF (resume_parser does).
+- It does not replace your SQL “consultant ranking” (one embedding per whole
+  resume vs JD). That is a separate feature. Chunk ingest is many embeddings
+  per resume for retrieval/Q&A.
+
+
+Files involved
+--------------
+- backend/ai/resume_parser.py — PDF → dict → save JSON (save_path parameter).
+- backend/ai/rag.py — parsed_resume_json_path, _resume_doc_id, ingest_resume,
+  get_vector_store, Chroma persist dir.
+- backend/api/routes/resume.py — must pass resume_id and matching save_path
+  when multi-resume is enabled (TODO if not done yet).
+
+
+Environment
+-----------
+GEMINI_API_KEY required for embeddings. Python packages: see backend/
+requirements.txt (langchain-chroma, chromadb, langchain-google-genai, …).
+
+
+Optional next step (not ingestion)
+----------------------------------
+Add a function that runs similarity_search on Chroma for a question, filtered
+by doc_id / resume_id, then calls the LLM — that is “RAG answer,” not ingest.
