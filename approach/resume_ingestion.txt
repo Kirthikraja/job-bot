@@ -1,0 +1,96 @@
+Resume ingestion (parsed JSON → Chroma chunks) — job-bot
+=========================================================
+This note records what “resume ingestion” means in this project, how it fits
+multi-resume storage, and how it connects to resume_parser and the API.
+
+1) Two different things (do not confuse)
+----------------------------------------
+- KB / filesystem: parsed resume as JSON (and the PDF). Canonical source for
+  “what the resume says.”
+- Vector index (Chroma under backend/ai/persists/): chunked + embedded copies
+  used for similarity search when you enable chunk RAG.
+
+Ingestion only updates the vector index from the JSON; it does not replace
+saving the JSON or the PDF.
+
+2) Pipeline before RAG (resume_parser + upload)
+-----------------------------------------------
+- User uploads PDF.
+- extract_text_from_pdf → parse_resume (Gemini) → validate_parsed_resume.
+- save_parsed_resume writes structured dict to a JSON file.
+
+For multiple resume versions, the API must pass an explicit save_path that
+matches what ingestion reads (see section 4). The default
+uploads/parsed_resume.json is the single-resume layout.
+
+3) What ingest_resume(resume_id) does (rag.py)
+-----------------------------------------------
+- parsed_resume_json_path(resume_id) → uploads/parsed_resumes/<id>.json
+  (resume_id is validated for safe path characters; it is not created inside
+  rag.py — it must be supplied by the upload route, e.g. resume.py).
+- load_parsed_resume(save_path=path) → Python dict (json.load already happened
+  inside that function).
+- json.dumps(data, ensure_ascii=False, indent=2) → one string (dict → JSON
+  text) so RecursiveCharacterTextSplitter can split it.
+- RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150) → list
+  of chunk strings.
+- Each chunk becomes a langchain_core.documents.Document with metadata:
+  source_type=resume, doc_id (shared label for all chunks of this version),
+  resume_id, chunk_index, indexed_at.
+- get_vector_store() → Chroma with Google embeddings (GEMINI_API_KEY).
+- Delete existing vectors where doc_id matches this version only (re-ingest
+  replaces that resume’s slice; other resume_ids untouched).
+- add_documents(docs) → embed and persist.
+
+Returns a small dict: ok / skipped / error plus resume_id and chunk count or
+reason.
+
+4) resume_id and doc_id
+-----------------------
+- resume_id: chosen in the upload layer (client, uuid, or DB primary key).
+  Must be unique per resume version you want to keep separate.
+- _resume_doc_id(resume_id): builds the Chroma metadata doc_id string
+  (e.g. resume:<resume_id>) so all chunks for one version share one filter key.
+  doc_id is metadata field name in Chroma; the value ties chunks together for
+  delete and scoped search. You could use resume_id alone as doc_id if the
+  collection only ever holds resume chunks.
+
+5) Path alignment (critical)
+----------------------------
+If save_parsed_resume uses uploads/parsed_resume.json but ingest reads
+uploads/parsed_resumes/<id>.json, ingestion will skip (file not found).
+Save and ingest must use the same path for the same resume_id.
+
+6) resume_parser.py changes
+---------------------------
+No change required inside resume_parser for multi-resume: it already accepts
+save_path. Callers must pass the correct path per version.
+
+7) API (resume.py) — still to wire for multi-resume
+---------------------------------------------------
+As of this doc, the upload route should be updated to:
+- Determine resume_id per request.
+- save_parsed_resume(validated, save_path=parsed_resume_json_path(resume_id)).
+- ingest_resume(resume_id).
+- Optionally store PDF per version (e.g. uploads/resume_<id>.pdf).
+
+Until that wiring exists, ingest_resume(resume_id) will not see files saved
+only to the default single path.
+
+8) Relation to “consultant / ranking” brief
+-------------------------------------------
+Whole-document embedding per resume vs JD for ranking is a separate path
+(SQL + one vector per resume). Chunk RAG in rag.py is for retrieval/Q&A over
+text chunks when the product needs it. Both can coexist: ranking uses one
+vector per resume; chunk ingest uses many vectors per resume.
+
+9) Dependencies / env
+---------------------
+- GEMINI_API_KEY for GoogleGenerativeAIEmbeddings.
+- langchain-chroma, chromadb, langchain-google-genai, etc. (see requirements).
+
+10) Optional next step in rag.py
+--------------------------------
+retrieve_resume_context(question, resume_id, k) or full rag_query: similarity
+search with filter on doc_id, then LLM — only when you need answers from chunks
+instead of full-context prompts.
